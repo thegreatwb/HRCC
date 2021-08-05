@@ -9,26 +9,27 @@ from BandwidthEstimator_gcc import GCCEstimator
 
 class Estimator(object):
     def __init__(self, model_path="./model/pretrained_model.pth", step_time=200):
-        # model parameters
+        '''
+        Import existing models
+        '''
+        # 1. Define model-related parameters
         exploration_param = 0.1  # the std var of action distribution
         K_epochs = 37  # update policy for K_epochs
         ppo_clip = 0.1  # clip parameter of PPO
         gamma = 0.99  # discount factor
-
         lr = 3e-5  # Adam parameters
         betas = (0.9, 0.999)
         self.state_dim = 6
         self.state_length = 10
         action_dim = 1
-        # load model
+        # 2. Load model
         self.device = torch.device("cpu")
         self.ppo = PPO(self.state_dim, self.state_length, action_dim, exploration_param, lr, betas, gamma, K_epochs, ppo_clip)
         self.ppo.policy.load_state_dict(torch.load('./ppo_2021_07_25_04_57_11_with500trace.pth'))
-        # the model to get the input of model
         self.packet_record = PacketRecord()
         self.packet_record.reset()
         self.step_time = step_time
-        # init
+        # 3. Initialization
         self.state = torch.zeros((1, self.state_dim, self.state_length))
         self.time_to_guide = False
         self.counter = 0
@@ -56,7 +57,6 @@ class Estimator(object):
             "payload_size": uint
         }
         '''
-        
         packet_info = PacketInfo()
         packet_info.payload_type = stats["payload_type"]
         packet_info.ssrc = stats["ssrc"]
@@ -72,8 +72,10 @@ class Estimator(object):
         self.gcc_estimator.report_states(stats)
 
     def get_estimated_bandwidth(self)->int:
-        
-        # calculate state:
+        '''
+        Calculate estimated bandwidth
+        '''
+        # 1. Calculate state
         self.receiving_rate = self.packet_record.calculate_receiving_rate(interval=self.step_time)
         self.receiving_rate_list.append(self.receiving_rate)
         self.delay = self.packet_record.calculate_average_delay(interval=self.step_time)
@@ -98,42 +100,24 @@ class Estimator(object):
         self.state[0, 4, -1] = self.overuse_distance / 100.0
         self.state[0, 5, -1] = self.last_overuse_cap / 6000000.0
 
-        # maintain list length
         if len(self.receiving_rate_list) == self.state_length:
             self.receiving_rate_list.pop(0)
             self.delay_list.pop(0)
             self.loss_ratio_list.pop(0)
 
         self.counter += 1
-
+        
         if self.counter % 4 == 0:
             self.time_to_guide = True
             self.counter = 0
-#            with open('./packet.log', 'a+') as f:
-#                # f.write('send_time_ms: ' + str(stats['send_time_ms']) + '; arrival_time_ms: ' + str(stats['arrival_time_ms']))
-#                f.write('Agent Tuning: ')
 
+        # 2. RL-Agent tunes the bandwidth estimated by the heuristic scheme
         if self.time_to_guide == True:
             action, _, _, _ = self.ppo.policy.forward(self.state)
             self.bandwidth_prediction = self.gcc_decision * pow(2, (2 * action - 1))
-#            if self.bandwidth_prediction < self.gcc_decision:
-#                with open('./packet.log', 'a+') as f:
-#                    f.write('Tuning down! ')
-#            else:
-##                with open('./packet.log', 'a+') as f:
-##                    f.write('Tuning up! ')
             self.gcc_estimator.change_bandwidth_estimation(self.bandwidth_prediction)
             self.time_to_guide = False
         else:
             self.bandwidth_prediction = self.gcc_decision
-
-#        with open('./state.log', 'a+') as f:
-#            f.write(str(self.receiving_rate) + '\t' + str(self.delay) + '\t' + str(self.loss_ratio) + '\n')
-
-        # with open('./state_logger.log','a+') as f:
-        #     f.write(' ' + str(self.bandwidth_prediction) + '\n')
-#        with open('./packet.log', 'a+') as f:
-#            # f.write('send_time_ms: ' + str(stats['send_time_ms']) + '; arrival_time_ms: ' + str(stats['arrival_time_ms']))
-#            f.write(str(self.bandwidth_prediction) + '\n')
 
         return self.bandwidth_prediction
